@@ -1,67 +1,46 @@
 from flask import Flask, request, jsonify
-import cv2
+import tensorflow as tf
 import numpy as np
+import cv2
+import os
+from tensorflow.keras.applications.efficientnet import preprocess_input
 
 app = Flask(__name__)
+IMG_SIZE = 224
+
+model = tf.keras.models.load_model("models/blur_classifier.keras")
 
 
-def is_blurry(image):
-    resized = cv2.resize(image, (640, 480))
-    gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
-
-    # Laplacian variance
-    laplacian_var = cv2.Laplacian(gray, cv2.CV_64F).var()
-
-    # Sobel gradient magnitude
-    sobelx = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
-    sobely = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
-    sobel_var = np.var(sobelx) + np.var(sobely)
-
-    height, width = gray.shape
-    size_factor = (height * width) / (640 * 480)  # normalized to VGA
-    adjusted_threshold = 150 * size_factor
-
-    print("threshold = ", adjusted_threshold)
-    print(f"Blur = {laplacian_var}, sobel = {sobel_var}")
-
-    return laplacian_var < adjusted_threshold or sobel_var < 200
+model.summary()
 
 
-def is_relevant(image):
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+def preprocess_image(img_bytes):
+    nparr = np.frombuffer(img_bytes, np.uint8)
+    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    img = cv2.resize(img, (IMG_SIZE, IMG_SIZE))
+    img = preprocess_input(img)
 
-    mean_intensity = np.mean(gray)
+    print("Input tensor mean:", np.mean(img))
 
-    print("Relevancy = ", mean_intensity)
-    return mean_intensity > 50  # Adjust threshold based on your needs
+    return np.expand_dims(img, axis=0)
 
 
 @app.route("/check-image", methods=["POST"])
 def check_image():
     if "image" not in request.files:
-        return jsonify({"error": "No image file provided"}), 400
+        return jsonify({"error": "No image provided"}), 400
 
-    file = request.files["image"]
-
-    np_image = np.frombuffer(file.read(), np.uint8)
-
-    image = cv2.imdecode(np_image, cv2.IMREAD_COLOR)
-
-    if image is None:
-        return jsonify({"error": "Invalid Image"}), 400
+    image = request.files["image"].read()
+    input_tensor = preprocess_image(image)
+    print("Tenser = ", input_tensor)
+    prediction = model(input_tensor, training=False).numpy()[0][0]
+    print("Prediction = ", prediction)
 
     result = {
-        "is_blurry": bool(is_blurry(image)),
-        "is_relevant": bool(is_relevant(image)),
+        "confidence": float(prediction),
+        "is_blurry": bool(prediction > 0.3),
+        "flag": "Image is blurry" if prediction > 0.3 else "Image is sharp",
     }
-
-    if result["is_blurry"]:
-        result["flag"] = "Image is blurry"
-    elif not result["is_relevant"]:
-        result["flag"] = "Image is not relevant"
-    else:
-        result["flag"] = "Image is clear and relevant"
-
     return jsonify(result)
 
 
